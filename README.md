@@ -21,6 +21,11 @@ npm install
 PORT=4000 npm start
 ```
 
+Optional: configure request body size limit (default `64kb`)
+```
+BODY_LIMIT=128kb PORT=4000 npm start
+```
+
 ### Hot reload (auto-restart on code changes)
 ```
 npm run dev
@@ -46,9 +51,12 @@ curl http://localhost:4000/health
 ## Log Format
 Each log entry is a single line:
 ```
-Mon Sep 08 15:26:27 PDT 2025: [research-20250908152541] state - active
+Fri Sep 12 18:59:53 PDT 2025: [research-20250908152541] State changed to active
 ```
-If no instance_id is present, the brackets are omitted.
+- Includes optional `[instance_id]` immediately after the timestamp.
+- Newlines in inputs are stripped to keep entries single-line.
+
+File naming uses a monthly log per config: `amp-mmm-yyyy.log`, e.g. `amp-sep-2005.log`.
 
 ## Recommendations
 - Deploy this service separately from your agents.
