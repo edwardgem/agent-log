@@ -32,9 +32,14 @@ app.use((err, req, res, next) => {
 fs.mkdirSync(LOG_DIR, { recursive: true });
 
 app.post('/api/log', async (req, res) => {
-  const { service, level = 'info', message, timestamp, meta } = req.body;
-  if (!service || !message) {
-    return res.status(400).json({ error: 'Missing required fields: service, message' });
+  const { service, level = 'info', message, timestamp, instance_id } = req.body;
+  // Sanitize helper first so we can validate instance_id after trimming
+  const clean = (v) => String(v ?? '').replace(/[\r\n]+/g, ' ').trim();
+
+  // Validate required fields including top-level instance_id
+  const instanceId = clean(instance_id);
+  if (!service || !message || !instanceId) {
+    return res.status(400).json({ error: 'Missing required fields: service, message, instance_id' });
   }
   // Determine log file name: amp-mmm-yyyy.log
   const dateObj = timestamp ? new Date(timestamp) : new Date();
@@ -68,12 +73,9 @@ app.post('/api/log', async (req, res) => {
   const dateStr = `${day} ${month} ${date} ${hours}:${mins}:${secs} ${tz} ${year}`;
 
   // Sanitize inputs to keep one-line logs
-  const clean = (v) => String(v ?? '').replace(/[\r\n]+/g, ' ').trim();
-  const instanceId = meta && meta.instance_id ? clean(meta.instance_id) : '';
-  const instancePart = instanceId ? ` [${instanceId}]` : '';
   const cleanMessage = clean(message);
-  // Required structure: 'Fri Sep 12 18:59:53 PDT 2025: [instance_id] message'
-  const line = `${dateStr}:${instancePart} ${cleanMessage}\n`;
+  // Required structure: always include instance_id: 'Fri Sep 12 18:59:53 PDT 2025: [instance_id] message'
+  const line = `${dateStr}: [${instanceId}] ${cleanMessage}\n`;
 
   try {
     // Ensure file exists before locking (atomic create-or-append)

@@ -39,7 +39,7 @@ curl -X POST http://localhost:4000/api/log \
     "service": "agent-email",
     "level": "info",
     "message": "State changed to active",
-    "meta": { "instance_id": "abc123" }
+    "instance_id": "abc123"
   }'
 ```
 
@@ -53,7 +53,7 @@ Each log entry is a single line:
 ```
 Fri Sep 12 18:59:53 PDT 2025: [research-20250908152541] State changed to active
 ```
-- Includes optional `[instance_id]` immediately after the timestamp.
+- Includes required `[instance_id]` immediately after the timestamp.
 - Newlines in inputs are stripped to keep entries single-line.
 
 File naming uses a monthly log per config: `amp-mmm-yyyy.log`, e.g. `amp-sep-2005.log`.
