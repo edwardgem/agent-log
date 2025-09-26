@@ -5,6 +5,8 @@ A minimal REST API for centralized logging, designed for use by multiple agent o
 ## Features
 - POST /api/log endpoint for structured log ingestion
 - Logs are appended as plain text to `logs/amp-mmm-yyyy.log`
+- Debounced writing: batches up to 5 log entries or 1-second delay to reduce I/O
+- Automatically triggers AMP refresh API after writing logs
 - Health check at GET /health
 - Easy to deploy and integrate
 - Supports hot reload for development
@@ -51,7 +53,18 @@ curl http://localhost:4000/health
 ## Log Format
 Each log entry is a single line:
 ```
-Fri Sep 12 18:59:53 PDT 2025: [research-20250908152541] State changed to active
+## Log Format
+Each log entry is a single line:
+```
+Mon Sep 08 15:26:27 PDT 2025: [research-20250908152541] state - active
+```
+
+## Debouncing Behavior
+To reduce I/O operations, the service batches log entries:
+- Collects up to 5 log entries or waits 1 second (whichever comes first)
+- Writes all batched entries to disk at once with file locking
+- Calls AMP refresh API (`http://localhost:5000/api/amp/trigger-refresh`) after each write
+- Logs local errors if AMP refresh API fails
 ```
 - Includes required `[instance_id]` immediately after the timestamp.
 - Newlines in inputs are stripped to keep entries single-line.

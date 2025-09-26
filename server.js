@@ -4,9 +4,16 @@ const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
 const lockfile = require('proper-lockfile');
+const http = require('http');
 
 const app = express();
 const PORT = process.env.PORT || 4000;
+
+// Debounce mechanism
+let debounceBuffer = [];
+let debounceTimer = null;
+const DEBOUNCE_DELAY = 1000; // 1 second
+const MAX_BUFFER_SIZE = 5;
 
 // Load log_dir from config.json
 let config = { log_dir: 'logs' };
@@ -18,6 +25,62 @@ try {
 }
 const LOG_DIR = path.isAbsolute(config.log_dir) ? config.log_dir : path.join(__dirname, config.log_dir);
 const BODY_LIMIT = process.env.BODY_LIMIT || config.body_limit || '64kb';
+
+// Function to call AMP refresh API
+function triggerAmpRefresh() {
+  const postData = JSON.stringify({});
+  const options = {
+    hostname: 'localhost',
+    port: 5000,
+    path: '/api/amp/trigger-refresh',
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(postData)
+    }
+  };
+
+  const req = http.request(options, (res) => {
+    // Success - no need to log anything
+  });
+
+  req.on('error', (err) => {
+    console.error(`AMP refresh API error: ${err.message}`);
+  });
+
+  req.write(postData);
+  req.end();
+}
+
+// Function to flush debounced log entries
+async function flushLogBuffer() {
+  if (debounceBuffer.length === 0) return;
+
+  const entries = [...debounceBuffer];
+  const logFilePath = entries[0].logFilePath; // All entries should have same file path
+  const logText = entries.map(entry => entry.line).join('');
+
+  debounceBuffer = [];
+  if (debounceTimer) {
+    clearTimeout(debounceTimer);
+    debounceTimer = null;
+  }
+
+  try {
+    // Ensure file exists before locking
+    if (!fs.existsSync(logFilePath)) {
+      fs.writeFileSync(logFilePath, '');
+    }
+    const release = await lockfile.lock(logFilePath, { retries: 5, realpath: false });
+    fs.appendFileSync(logFilePath, logText);
+    await release();
+    
+    // Trigger AMP refresh after successful write
+    triggerAmpRefresh();
+  } catch (err) {
+    console.error(`Failed to write log (debounced): ${err.message}`);
+  }
+}
 
 app.use(express.json({ limit: BODY_LIMIT }));
 // Optional: custom error response for payload too large
@@ -77,27 +140,21 @@ app.post('/api/log', async (req, res) => {
   // Required structure: always include instance_id: 'Fri Sep 12 18:59:53 PDT 2025: [instance_id] message'
   const line = `${dateStr}: [${instanceId}] ${cleanMessage}\n`;
 
-  try {
-    // Ensure file exists before locking (atomic create-or-append)
-    const fh = await fsp.open(logFilePath, 'a');
-    await fh.close();
+  // Add to debounce buffer instead of writing immediately
+  debounceBuffer.push({ logFilePath, line });
 
-    // Acquire an inter-process lock with retries and stale protection
-    const release = await lockfile.lock(logFilePath, {
-      realpath: false,
-      stale: 5000,
-      retries: { retries: 10, factor: 1.4, minTimeout: 50, maxTimeout: 500 },
-    });
-    try {
-      await fsp.appendFile(logFilePath, line, 'utf8');
-    } finally {
-      await release();
+  // Check if we should flush immediately (max buffer size reached)
+  if (debounceBuffer.length >= MAX_BUFFER_SIZE) {
+    await flushLogBuffer();
+  } else {
+    // Reset/start the debounce timer
+    if (debounceTimer) {
+      clearTimeout(debounceTimer);
     }
-    res.json({ ok: true });
-  } catch (err) {
-    const status = /lock/i.test(err.message) ? 503 : 500;
-    res.status(status).json({ error: 'Failed to write log', detail: err.message });
+    debounceTimer = setTimeout(flushLogBuffer, DEBOUNCE_DELAY);
   }
+
+  res.json({ ok: true });
 });
 
 app.get('/health', (req, res) => {
