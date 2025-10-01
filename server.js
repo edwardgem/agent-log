@@ -54,11 +54,13 @@ function triggerAmpRefresh() {
 
 // Function to flush debounced log entries
 async function flushLogBuffer() {
+  console.log('[DEBUG] flushLogBuffer called, buffer length:', debounceBuffer.length);
   if (debounceBuffer.length === 0) return;
 
   const entries = [...debounceBuffer];
   const logFilePath = entries[0].logFilePath; // All entries should have same file path
   const logText = entries.map(entry => entry.line).join('');
+  console.log(`[DEBUG] Flushing ${entries.length} entries to: ${logFilePath}`);
 
   debounceBuffer = [];
   if (debounceTimer) {
@@ -69,16 +71,23 @@ async function flushLogBuffer() {
   try {
     // Ensure file exists before locking
     if (!fs.existsSync(logFilePath)) {
+      console.log('[DEBUG] Creating new log file:', logFilePath);
       fs.writeFileSync(logFilePath, '');
     }
+    console.log('[DEBUG] Acquiring file lock...');
     const release = await lockfile.lock(logFilePath, { retries: 5, realpath: false });
+    console.log('[DEBUG] Lock acquired, writing log text');
     fs.appendFileSync(logFilePath, logText);
+    console.log('[DEBUG] Log written, releasing lock');
     await release();
-    
+    console.log('[DEBUG] Lock released, triggering AMP refresh');
+
     // Trigger AMP refresh after successful write
     triggerAmpRefresh();
+    console.log('[DEBUG] Flush completed successfully');
   } catch (err) {
-    console.error(`Failed to write log (debounced): ${err.message}`);
+    console.error(`[ERROR] Failed to write log (debounced):`, err);
+    console.error('[ERROR] Stack:', err.stack);
   }
 }
 
@@ -95,13 +104,19 @@ app.use((err, req, res, next) => {
 fs.mkdirSync(LOG_DIR, { recursive: true });
 
 app.post('/api/log', async (req, res) => {
+  console.log('[DEBUG] /api/log received request');
+  console.log('[DEBUG] Request body:', JSON.stringify(req.body, null, 2));
+
   const { service, level = 'info', message, timestamp, instance_id } = req.body;
   // Sanitize helper first so we can validate instance_id after trimming
   const clean = (v) => String(v ?? '').replace(/[\r\n]+/g, ' ').trim();
 
   // Validate required fields including top-level instance_id
   const instanceId = clean(instance_id);
+  console.log('[DEBUG] Parsed fields:', { service, level, instanceId, hasMessage: !!message });
+
   if (!service || !message || !instanceId) {
+    console.error('[ERROR] Missing required fields:', { service: !!service, message: !!message, instanceId: !!instanceId });
     return res.status(400).json({ error: 'Missing required fields: service, message, instance_id' });
   }
   // Determine log file name: amp-mmm-yyyy.log
@@ -114,9 +129,7 @@ app.post('/api/log', async (req, res) => {
   const logFileName = `amp-${mmm}-${yyyy}.log`;
   const logFilePath = path.join(LOG_DIR, logFileName);
 
-  if (process.env.DEBUG) {
-    console.log(`Logging to ${logFilePath}`);
-  }
+  console.log(`[DEBUG] Log file: ${logFilePath}`);
 
   // Format: 'Mon Sep 08 15:26:27 PDT 2025: [instance-Id] message'
   const dateObjForLog = safeDate;
@@ -139,21 +152,26 @@ app.post('/api/log', async (req, res) => {
   const cleanMessage = clean(message);
   // Required structure: always include instance_id: 'Fri Sep 12 18:59:53 PDT 2025: [instance_id] message'
   const line = `${dateStr}: [${instanceId}] ${cleanMessage}\n`;
+  console.log('[DEBUG] Formatted log line:', line.trim());
 
   // Add to debounce buffer instead of writing immediately
   debounceBuffer.push({ logFilePath, line });
+  console.log(`[DEBUG] Buffer size: ${debounceBuffer.length}/${MAX_BUFFER_SIZE}`);
 
   // Check if we should flush immediately (max buffer size reached)
   if (debounceBuffer.length >= MAX_BUFFER_SIZE) {
+    console.log('[DEBUG] Buffer full, flushing immediately');
     await flushLogBuffer();
   } else {
     // Reset/start the debounce timer
     if (debounceTimer) {
       clearTimeout(debounceTimer);
     }
+    console.log(`[DEBUG] Starting debounce timer (${DEBOUNCE_DELAY}ms)`);
     debounceTimer = setTimeout(flushLogBuffer, DEBOUNCE_DELAY);
   }
 
+  console.log('[DEBUG] Responding with ok: true');
   res.json({ ok: true });
 });
 
