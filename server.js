@@ -6,6 +6,32 @@ const path = require('path');
 const lockfile = require('proper-lockfile');
 const http = require('http');
 
+// Lightweight .env loader (avoids extra dependency). Load local .env then
+// fall back to backend/.env so both services can share the trigger secret.
+function loadEnvFile(envPath) {
+  try {
+    if (!envPath || !fs.existsSync(envPath)) return;
+    const lines = fs.readFileSync(envPath, 'utf8').split(/\r?\n/);
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith('#')) continue;
+      const eqIdx = line.indexOf('=');
+      if (eqIdx === -1) continue;
+      const key = line.slice(0, eqIdx).trim();
+      if (!key || Object.prototype.hasOwnProperty.call(process.env, key)) continue;
+      const value = line.slice(eqIdx + 1).trim();
+      process.env[key] = value;
+    }
+  } catch (err) {
+    console.warn(`Failed to load env file at ${envPath}:`, err.message);
+  }
+}
+
+const localEnvPath = path.join(__dirname, '.env');
+const backendEnvPath = path.join(__dirname, '..', 'amp-backend', '.env');
+loadEnvFile(localEnvPath);
+loadEnvFile(backendEnvPath);
+
 const app = express();
 const PORT = process.env.PORT || 4000;
 
@@ -39,6 +65,11 @@ function triggerAmpRefresh() {
       'Content-Length': Buffer.byteLength(postData)
     }
   };
+
+  const triggerSecret = process.env.AMP_TRIGGER_SECRET;
+  if (triggerSecret) {
+    options.headers['X-AMP-Trigger-Key'] = triggerSecret;
+  }
 
   const req = http.request(options, (res) => {
     // Success - no need to log anything
@@ -107,17 +138,18 @@ app.post('/api/log', async (req, res) => {
   console.log('[DEBUG] /api/log received request');
   console.log('[DEBUG] Request body:', JSON.stringify(req.body, null, 2));
 
-  const { service, level = 'info', message, timestamp, instance_id } = req.body;
+  const { service, level = 'info', message, timestamp, instance_id, username } = req.body;
   // Sanitize helper first so we can validate instance_id after trimming
   const clean = (v) => String(v ?? '').replace(/[\r\n]+/g, ' ').trim();
 
-  // Validate required fields including top-level instance_id
+  // Validate required fields including top-level instance_id and username
   const instanceId = clean(instance_id);
-  console.log('[DEBUG] Parsed fields:', { service, level, instanceId, hasMessage: !!message });
+  const userName = clean(username);
+  console.log('[DEBUG] Parsed fields:', { service, level, instanceId, userName, hasMessage: !!message });
 
-  if (!service || !message || !instanceId) {
-    console.error('[ERROR] Missing required fields:', { service: !!service, message: !!message, instanceId: !!instanceId });
-    return res.status(400).json({ error: 'Missing required fields: service, message, instance_id' });
+  if (!service || !message || !instanceId || !userName) {
+    console.error('[ERROR] Missing required fields:', { service: !!service, message: !!message, instanceId: !!instanceId, userName: !!userName });
+    return res.status(400).json({ error: 'Missing required fields: service, message, instance_id, username' });
   }
   // Determine log file name: amp-mmm-yyyy.log
   const dateObj = timestamp ? new Date(timestamp) : new Date();

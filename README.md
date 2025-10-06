@@ -41,7 +41,8 @@ curl -X POST http://localhost:4000/api/log \
     "service": "agent-email",
     "level": "info",
     "message": "State changed to active",
-    "instance_id": "abc123"
+    "instance_id": "abc123",
+    "username": "edwardgem@gmail.com"
   }'
 ```
 
@@ -63,7 +64,9 @@ Mon Sep 08 15:26:27 PDT 2025: [research-20250908152541] state - active
 To reduce I/O operations, the service batches log entries:
 - Collects up to 5 log entries or waits 1 second (whichever comes first)
 - Writes all batched entries to disk at once with file locking
-- Calls AMP refresh API (`http://localhost:5000/api/amp/trigger-refresh`) after each write
+- Calls AMP refresh API (`http://localhost:5000/api/amp/trigger-refresh`) after each write. When
+  `AMP_TRIGGER_SECRET` is set in `.env`, the service includes the
+  `X-AMP-Trigger-Key` header automatically so the backend accepts the webhook.
 - Logs local errors if AMP refresh API fails
 ```
 - Includes required `[instance_id]` immediately after the timestamp.
