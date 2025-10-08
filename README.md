@@ -57,7 +57,7 @@ Each log entry is a single line:
 ## Log Format
 Each log entry is a single line:
 ```
-Mon Sep 08 15:26:27 PDT 2025: [research-20250908152541] state - active
+Wed Oct 01 09:36:51 PDT 2025: [email-20251001093648] state - active (jeshua.cheng@inquiryon.com)
 ```
 
 ## Debouncing Behavior

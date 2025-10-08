@@ -182,8 +182,8 @@ app.post('/api/log', async (req, res) => {
 
   // Sanitize inputs to keep one-line logs
   const cleanMessage = clean(message);
-  // Required structure: always include instance_id: 'Fri Sep 12 18:59:53 PDT 2025: [instance_id] message'
-  const line = `${dateStr}: [${instanceId}] ${cleanMessage}\n`;
+  // Required structure: always include instance_id and username: 'Fri Sep 12 18:59:53 PDT 2025: [instance_id] message (username)'
+  const line = `${dateStr}: [${instanceId}] ${cleanMessage} (${userName})\n`;
   console.log('[DEBUG] Formatted log line:', line.trim());
 
   // Add to debounce buffer instead of writing immediately
