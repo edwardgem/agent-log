@@ -34,6 +34,59 @@ loadEnvFile(backendEnvPath);
 
 const app = express();
 const PORT = process.env.PORT || 4000;
+const PACIFIC_TZ = 'America/Los_Angeles';
+
+// Reusable formatters so we only instantiate Intl.DateTimeFormat once.
+const PACIFIC_TIMESTAMP_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  timeZone: PACIFIC_TZ,
+  weekday: 'short',
+  month: 'short',
+  day: '2-digit',
+  year: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hour12: false,
+  timeZoneName: 'short'
+});
+
+const PACIFIC_MONTH_YEAR_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  timeZone: PACIFIC_TZ,
+  month: 'short',
+  year: 'numeric'
+});
+
+function formatPacificTimestamp(date) {
+  const parts = PACIFIC_TIMESTAMP_FORMATTER.formatToParts(date);
+  const lookup = (type) => {
+    const part = parts.find(p => p.type === type);
+    return part ? part.value : '';
+  };
+
+  const dayName = lookup('weekday');
+  const monthName = lookup('month');
+  const day = lookup('day');
+  const hour = lookup('hour');
+  const minute = lookup('minute');
+  const second = lookup('second');
+  const year = lookup('year') || String(date.getUTCFullYear());
+  const timeZoneName = (lookup('timeZoneName') || 'PT').replace(/\s+/g, '');
+
+  return `${dayName} ${monthName} ${day} ${hour}:${minute}:${second} ${timeZoneName} ${year}`;
+}
+
+function getPacificMonthYear(date) {
+  const parts = PACIFIC_MONTH_YEAR_FORMATTER.formatToParts(date);
+  const lookup = (type) => {
+    const part = parts.find(p => p.type === type);
+    return part ? part.value : '';
+  };
+
+  const month = lookup('month').toLowerCase();
+  const year = lookup('year');
+
+  return { month, year };
+}
 
 // Debounce mechanism
 let debounceBuffer = [];
@@ -156,29 +209,16 @@ app.post('/api/log', async (req, res) => {
   const isValidDate = !isNaN(dateObj.getTime());
   const safeDate = isValidDate ? dateObj : new Date();
   const monthNames = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
-  const mmm = monthNames[safeDate.getMonth()];
-  const yyyy = safeDate.getFullYear();
+  const { month: pacificMonth, year: pacificYear } = getPacificMonthYear(safeDate);
+  const mmm = pacificMonth || monthNames[safeDate.getMonth()];
+  const yyyy = pacificYear || String(safeDate.getFullYear());
   const logFileName = `amp-${mmm}-${yyyy}.log`;
   const logFilePath = path.join(LOG_DIR, logFileName);
 
   console.log(`[DEBUG] Log file: ${logFilePath}`);
 
   // Format: 'Mon Sep 08 15:26:27 PDT 2025: [instance-Id] message'
-  const dateObjForLog = safeDate;
-  // Format: 'Wed Sep 10 12:18:19 PDT 2025' (no comma)
-  const weekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  const day = weekdays[dateObjForLog.getDay()];
-  const month = months[dateObjForLog.getMonth()];
-  const date = dateObjForLog.getDate().toString().padStart(2, '0');
-  const hours = dateObjForLog.getHours().toString().padStart(2, '0');
-  const mins = dateObjForLog.getMinutes().toString().padStart(2, '0');
-  const secs = dateObjForLog.getSeconds().toString().padStart(2, '0');
-  // Get timezone abbreviation (fallback to empty)
-  const tzMatch = dateObjForLog.toTimeString().match(/\(([^)]+)\)$/);
-  const tz = tzMatch ? tzMatch[1].split(' ').map(w => w[0]).join('') : '';
-  const year = dateObjForLog.getFullYear();
-  const dateStr = `${day} ${month} ${date} ${hours}:${mins}:${secs} ${tz} ${year}`;
+  const dateStr = formatPacificTimestamp(safeDate);
 
   // Sanitize inputs to keep one-line logs
   const cleanMessage = clean(message);
