@@ -251,6 +251,67 @@ app.get('/health', (req, res) => {
   res.json({ ok: true });
 });
 
+// GET /api/log/progress-all?instance_id=...
+// Returns all log records for a given instance_id from amp-*.log files
+app.get('/api/log/progress-all', async (req, res) => {
+  const instanceId = String(req.query.instance_id || req.query.id || '').trim();
+  if (!instanceId) {
+    return res.status(400).json({ error: 'instance_id_required' });
+  }
+
+  try {
+    const files = await fsp.readdir(LOG_DIR);
+    const logFiles = files.filter(f => f.startsWith('amp-') && f.endsWith('.log'));
+    const entries = [];
+
+    const pattern = `[${instanceId}]`;
+    for (const file of logFiles) {
+      const fullPath = path.join(LOG_DIR, file);
+      let text;
+      try {
+        text = await fsp.readFile(fullPath, 'utf8');
+      } catch (e) {
+        continue;
+      }
+      const lines = text.split(/\r?\n/);
+      for (const rawLine of lines) {
+        if (!rawLine || rawLine.indexOf(pattern) === -1) continue;
+        // Expected format: "<timestamp>: [instanceId] message (username)"
+        const tsPart = rawLine.split(': [')[0];
+        const msgPart = rawLine.substring(rawLine.indexOf(pattern) + pattern.length).trim();
+        const usernameMatch = msgPart.match(/\(([^)]+)\)\s*$/);
+        const username = usernameMatch ? usernameMatch[1] : undefined;
+        const message = usernameMatch ? msgPart.replace(usernameMatch[0], '').trim() : msgPart;
+        let ts = null;
+        try {
+          const parsed = Date.parse(tsPart);
+          ts = isNaN(parsed) ? null : new Date(parsed).toISOString();
+        } catch (_) { ts = null; }
+        entries.push({
+          ts,
+          message,
+          username,
+          source: file,
+          raw: rawLine
+        });
+      }
+    }
+
+    // Sort by timestamp if available, else keep insertion order
+    entries.sort((a, b) => {
+      if (a.ts && b.ts) return a.ts.localeCompare(b.ts);
+      if (a.ts) return -1;
+      if (b.ts) return 1;
+      return 0;
+    });
+
+    return res.json({ instance_id: instanceId, progress: entries });
+  } catch (e) {
+    console.error('[ERROR] progress-all failed:', e.message || e);
+    return res.status(500).json({ error: 'progress_all_failed', detail: e && e.message ? e.message : String(e) });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Agent Log REST service listening on http://localhost:${PORT}`);
 });
