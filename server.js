@@ -104,6 +104,7 @@ try {
 }
 const LOG_DIR = path.isAbsolute(config.log_dir) ? config.log_dir : path.join(__dirname, config.log_dir);
 const BODY_LIMIT = process.env.BODY_LIMIT || config.body_limit || '64kb';
+const MONTH_ABBRS = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
 
 // Function to call AMP refresh API
 function triggerAmpRefresh() {
@@ -249,6 +250,150 @@ app.post('/api/log', async (req, res) => {
 
 app.get('/health', (req, res) => {
   res.json({ ok: true });
+});
+
+// GET /api/log/progress-all?instance_id=...
+// Returns all log records for a given instance_id from amp-*.log files
+function guessLogFilesForInstance(instanceId) {
+  if (!instanceId) return null;
+  const match = String(instanceId).match(/(\d{4})(\d{2})\d{8}$/);
+  if (!match) return null;
+  const year = match[1];
+  const monthNum = Number(match[2]);
+  if (!monthNum || monthNum < 1 || monthNum > 12) return null;
+  const abbr = MONTH_ABBRS[monthNum - 1];
+  if (!abbr) return null;
+  return [`amp-${abbr}-${year}.log`];
+}
+
+function formatPacificTimestamp(input) {
+  if (!input) return 'unknown';
+  let date;
+  try {
+    date = typeof input === 'string' ? new Date(input) : input;
+  } catch (_) {
+    return String(input);
+  }
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+    return typeof input === 'string' && input.trim() ? input : 'unknown';
+  }
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Los_Angeles',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  });
+  const parts = formatter.formatToParts(date);
+  const valueOf = (type) => {
+    const part = parts.find((p) => p.type === type);
+    return part ? part.value : '';
+  };
+  return `${valueOf('year')}-${valueOf('month')}-${valueOf('day')} ${valueOf('hour')}:${valueOf('minute')}:${valueOf('second')}`;
+}
+
+function serializeEntries(entries) {
+  if (!Array.isArray(entries)) return [];
+  return entries.map((entry) => {
+    const ts = formatPacificTimestamp(entry.ts || entry.raw_ts || entry.raw);
+    const message = entry.message || '';
+    return [ts, message];
+  });
+}
+
+async function collectLogEntries(instanceId, filterFn) {
+  const files = await fsp.readdir(LOG_DIR);
+  const guessFiles = guessLogFilesForInstance(instanceId);
+  let logFiles = files.filter(f => f.startsWith('amp-') && f.endsWith('.log'));
+  if (guessFiles && guessFiles.length) {
+    const narrowed = logFiles.filter(f => guessFiles.includes(f));
+    if (narrowed.length) {
+      logFiles = narrowed;
+    }
+  }
+  const entries = [];
+  const pattern = `[${instanceId}]`;
+
+  for (const file of logFiles) {
+    const fullPath = path.join(LOG_DIR, file);
+    let text;
+    try {
+      text = await fsp.readFile(fullPath, 'utf8');
+    } catch (e) {
+      continue;
+    }
+    const lines = text.split(/\r?\n/);
+    for (const rawLine of lines) {
+      if (!rawLine || rawLine.indexOf(pattern) === -1) continue;
+      const tsPart = rawLine.split(': [')[0];
+      const msgPart = rawLine.substring(rawLine.indexOf(pattern) + pattern.length).trim();
+      const usernameMatch = msgPart.match(/\(([^)]+)\)\s*$/);
+      const username = usernameMatch ? usernameMatch[1] : undefined;
+      const message = usernameMatch ? msgPart.replace(usernameMatch[0], '').trim() : msgPart;
+      let ts = null;
+      try {
+        const parsed = Date.parse(tsPart);
+        ts = isNaN(parsed) ? null : new Date(parsed).toISOString();
+      } catch (_) { ts = null; }
+      const entry = {
+        ts,
+        message,
+        username,
+        source: file,
+        raw: rawLine
+      };
+      if (filterFn && !filterFn(entry)) continue;
+      entries.push(entry);
+    }
+  }
+
+  entries.sort((a, b) => {
+    if (a.ts && b.ts) return a.ts.localeCompare(b.ts);
+    if (a.ts) return -1;
+    if (b.ts) return 1;
+    return 0;
+  });
+
+  return entries;
+}
+
+app.get('/api/log/progress-all', async (req, res) => {
+  const instanceId = String(req.query.instance_id || req.query.id || '').trim();
+  if (!instanceId) {
+    return res.status(400).json({ error: 'instance_id_required' });
+  }
+
+  try {
+    await flushLogBuffer();
+    const entries = await collectLogEntries(instanceId);
+    return res.json({ instance_id: instanceId, progress: serializeEntries(entries) });
+  } catch (e) {
+    console.error('[ERROR] progress-all failed:', e.message || e);
+    return res.status(500).json({ error: 'progress_all_failed', detail: e && e.message ? e.message : String(e) });
+  }
+});
+
+app.get('/api/log/hitl-progress', async (req, res) => {
+  const instanceId = String(req.query.instance_id || req.query.id || '').trim();
+  if (!instanceId) {
+    return res.status(400).json({ error: 'instance_id_required' });
+  }
+
+  try {
+    await flushLogBuffer();
+    const entries = await collectLogEntries(instanceId, (entry) => {
+      const msg = String(entry.message || '').trim();
+      const upper = msg.toUpperCase();
+      return upper.startsWith('[HITL]') || upper.startsWith('[HITL-PROGRESS]');
+    });
+    return res.json({ instance_id: instanceId, progress: serializeEntries(entries) });
+  } catch (e) {
+    console.error('[ERROR] hitl-progress failed:', e.message || e);
+    return res.status(500).json({ error: 'hitl_progress_failed', detail: e && e.message ? e.message : String(e) });
+  }
 });
 
 app.listen(PORT, () => {
