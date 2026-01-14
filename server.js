@@ -1,10 +1,10 @@
 
 const express = require('express');
 const fs = require('fs');
-const fsp = fs.promises;
 const path = require('path');
 const lockfile = require('proper-lockfile');
 const http = require('http');
+const { SqliteEventLogStore } = require('./store/sqlite_event_log_store');
 
 // Lightweight .env loader (avoids extra dependency). Load local .env then
 // fall back to backend/.env so both services can share the trigger secret.
@@ -36,44 +36,11 @@ const app = express();
 const PORT = process.env.PORT || 4000;
 const PACIFIC_TZ = 'America/Los_Angeles';
 
-// Reusable formatters so we only instantiate Intl.DateTimeFormat once.
-const PACIFIC_TIMESTAMP_FORMATTER = new Intl.DateTimeFormat('en-US', {
-  timeZone: PACIFIC_TZ,
-  weekday: 'short',
-  month: 'short',
-  day: '2-digit',
-  year: 'numeric',
-  hour: '2-digit',
-  minute: '2-digit',
-  second: '2-digit',
-  hour12: false,
-  timeZoneName: 'short'
-});
-
 const PACIFIC_MONTH_YEAR_FORMATTER = new Intl.DateTimeFormat('en-US', {
   timeZone: PACIFIC_TZ,
   month: 'short',
   year: 'numeric'
 });
-
-function formatPacificTimestamp(date) {
-  const parts = PACIFIC_TIMESTAMP_FORMATTER.formatToParts(date);
-  const lookup = (type) => {
-    const part = parts.find(p => p.type === type);
-    return part ? part.value : '';
-  };
-
-  const dayName = lookup('weekday');
-  const monthName = lookup('month');
-  const day = lookup('day');
-  const hour = lookup('hour');
-  const minute = lookup('minute');
-  const second = lookup('second');
-  const year = lookup('year') || String(date.getUTCFullYear());
-  const timeZoneName = (lookup('timeZoneName') || 'PT').replace(/\s+/g, '');
-
-  return `${dayName} ${monthName} ${day} ${hour}:${minute}:${second} ${timeZoneName} ${year}`;
-}
 
 function getPacificMonthYear(date) {
   const parts = PACIFIC_MONTH_YEAR_FORMATTER.formatToParts(date);
@@ -95,7 +62,7 @@ const DEBOUNCE_DELAY = 1000; // 1 second
 const MAX_BUFFER_SIZE = 5;
 
 // Load log_dir from config.json
-let config = { log_dir: 'logs' };
+let config = { log_dir: 'logs', log_jsonl_debug: false, log_agent_secret: '' };
 try {
   const raw = fs.readFileSync(path.join(__dirname, 'config.json'), 'utf8');
   config = { ...config, ...JSON.parse(raw) };
@@ -103,8 +70,21 @@ try {
   // Use default if config.json missing or invalid
 }
 const LOG_DIR = path.isAbsolute(config.log_dir) ? config.log_dir : path.join(__dirname, config.log_dir);
+const LOG_JSONL_DEBUG = process.env.LOG_JSONL_DEBUG === '1' || config.log_jsonl_debug === true;
+const DB_PATH = process.env.LOG_DB_PATH || config.db_path || path.join(LOG_DIR, 'agent-log.sqlite');
+const LOG_AGENT_SECRET = process.env.LOG_AGENT_SECRET || config.log_agent_secret || '';
+const NODE_ENV = process.env.NODE_ENV || config.node_env || 'development';
+const AMP_ENV = process.env.AMP_ENV || '';
+const isProduction = ['production'].includes(String(NODE_ENV).toLowerCase())
+  || ['production'].includes(String(AMP_ENV).toLowerCase());
+const REQUIRE_AUTH = process.env.LOG_AGENT_REQUIRE_AUTH === '1' || isProduction;
 const BODY_LIMIT = process.env.BODY_LIMIT || config.body_limit || '64kb';
-const MONTH_ABBRS = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+const eventLogStore = new SqliteEventLogStore(DB_PATH);
+
+if (isProduction && !LOG_AGENT_SECRET) {
+  console.error('[FATAL] log-agent requires LOG_AGENT_SECRET in production.');
+  process.exit(1);
+}
 
 // Function to call AMP refresh API
 function triggerAmpRefresh() {
@@ -139,6 +119,7 @@ function triggerAmpRefresh() {
 
 // Function to flush debounced log entries
 async function flushLogBuffer() {
+  if (!LOG_JSONL_DEBUG) return;
   console.log('[DEBUG] flushLogBuffer called, buffer length:', debounceBuffer.length);
   if (debounceBuffer.length === 0) return;
 
@@ -165,10 +146,7 @@ async function flushLogBuffer() {
     fs.appendFileSync(logFilePath, logText);
     console.log('[DEBUG] Log written, releasing lock');
     await release();
-    console.log('[DEBUG] Lock released, triggering AMP refresh');
-
-    // Trigger AMP refresh after successful write
-    triggerAmpRefresh();
+    console.log('[DEBUG] Lock released');
     console.log('[DEBUG] Flush completed successfully');
   } catch (err) {
     console.error(`[ERROR] Failed to write log (debounced):`, err);
@@ -184,6 +162,20 @@ app.use((err, req, res, next) => {
   }
   return next(err);
 });
+
+function requireLogAgentAuth(req, res) {
+  if (!REQUIRE_AUTH) return false;
+  if (!LOG_AGENT_SECRET) {
+    res.status(500).json({ error: 'log_agent_secret_missing' });
+    return true;
+  }
+  const provided = req.headers['x-amp-internal-key'];
+  if (!provided || provided !== LOG_AGENT_SECRET) {
+    res.status(401).json({ error: 'invalid_log_agent_key' });
+    return true;
+  }
+  return false;
+}
 
 // Ensure log directory exists (sync is fine during startup)
 fs.mkdirSync(LOG_DIR, { recursive: true });
@@ -205,45 +197,62 @@ app.post('/api/log', async (req, res) => {
     console.error('[ERROR] Missing required fields:', { service: !!service, message: !!message, instanceId: !!instanceId, userName: !!userName });
     return res.status(400).json({ error: 'Missing required fields: service, message, instance_id, username' });
   }
-  // Determine log file name: amp-mmm-yyyy.log
   const dateObj = timestamp ? new Date(timestamp) : new Date();
   const isValidDate = !isNaN(dateObj.getTime());
   const safeDate = isValidDate ? dateObj : new Date();
-  const monthNames = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
-  const { month: pacificMonth, year: pacificYear } = getPacificMonthYear(safeDate);
-  const mmm = pacificMonth || monthNames[safeDate.getMonth()];
-  const yyyy = pacificYear || String(safeDate.getFullYear());
-  const logFileName = `amp-${mmm}-${yyyy}.log`;
-  const logFilePath = path.join(LOG_DIR, logFileName);
-
-  console.log(`[DEBUG] Log file: ${logFilePath}`);
-
-  // Format: 'Mon Sep 08 15:26:27 PDT 2025: [instance-Id] message'
-  const dateStr = formatPacificTimestamp(safeDate);
+  const eventTime = isValidDate ? safeDate.toISOString() : new Date().toISOString();
 
   // Sanitize inputs to keep one-line logs
   const cleanMessage = clean(message);
-  // Required structure: always include instance_id and username: 'Fri Sep 12 18:59:53 PDT 2025: [instance_id] message (username)'
-  const line = `${dateStr}: [${instanceId}] ${cleanMessage} (${userName})\n`;
-  console.log('[DEBUG] Formatted log line:', line.trim());
 
-  // Add to debounce buffer instead of writing immediately
-  debounceBuffer.push({ logFilePath, line });
-  console.log(`[DEBUG] Buffer size: ${debounceBuffer.length}/${MAX_BUFFER_SIZE}`);
-
-  // Check if we should flush immediately (max buffer size reached)
-  if (debounceBuffer.length >= MAX_BUFFER_SIZE) {
-    console.log('[DEBUG] Buffer full, flushing immediately');
-    await flushLogBuffer();
-  } else {
-    // Reset/start the debounce timer
-    if (debounceTimer) {
-      clearTimeout(debounceTimer);
-    }
-    console.log(`[DEBUG] Starting debounce timer (${DEBOUNCE_DELAY}ms)`);
-    debounceTimer = setTimeout(flushLogBuffer, DEBOUNCE_DELAY);
+  try {
+    await eventLogStore.appendLogEntry({
+      instance_id: instanceId,
+      service,
+      level,
+      message: cleanMessage,
+      username: userName,
+      event_time: eventTime,
+      created_at: new Date().toISOString()
+    });
+  } catch (err) {
+    console.error('[ERROR] Failed to write log entry to SQLite:', err);
+    return res.status(500).json({ error: 'log_write_failed' });
   }
 
+  if (LOG_JSONL_DEBUG) {
+    const monthNames = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+    const { month: pacificMonth, year: pacificYear } = getPacificMonthYear(safeDate);
+    const mmm = pacificMonth || monthNames[safeDate.getMonth()];
+    const yyyy = pacificYear || String(safeDate.getFullYear());
+    const logFileName = `amp-${mmm}-${yyyy}.jsonl`;
+    const logFilePath = path.join(LOG_DIR, logFileName);
+
+    const debugEntry = {
+      ts: eventTime,
+      service,
+      level,
+      message: cleanMessage,
+      instance_id: instanceId,
+      username: userName
+    };
+    const line = `${JSON.stringify(debugEntry)}\n`;
+    debounceBuffer.push({ logFilePath, line });
+    console.log(`[DEBUG] Debug buffer size: ${debounceBuffer.length}/${MAX_BUFFER_SIZE}`);
+
+    if (debounceBuffer.length >= MAX_BUFFER_SIZE) {
+      console.log('[DEBUG] Debug buffer full, flushing immediately');
+      await flushLogBuffer();
+    } else {
+      if (debounceTimer) {
+        clearTimeout(debounceTimer);
+      }
+      console.log(`[DEBUG] Starting debug debounce timer (${DEBOUNCE_DELAY}ms)`);
+      debounceTimer = setTimeout(flushLogBuffer, DEBOUNCE_DELAY);
+    }
+  }
+
+  triggerAmpRefresh();
   console.log('[DEBUG] Responding with ok: true');
   res.json({ ok: true });
 });
@@ -253,19 +262,7 @@ app.get('/health', (req, res) => {
 });
 
 // GET /api/log/progress-all?instance_id=...
-// Returns all log records for a given instance_id from amp-*.log files
-function guessLogFilesForInstance(instanceId) {
-  if (!instanceId) return null;
-  const match = String(instanceId).match(/(\d{4})(\d{2})\d{8}$/);
-  if (!match) return null;
-  const year = match[1];
-  const monthNum = Number(match[2]);
-  if (!monthNum || monthNum < 1 || monthNum > 12) return null;
-  const abbr = MONTH_ABBRS[monthNum - 1];
-  if (!abbr) return null;
-  return [`amp-${abbr}-${year}.log`];
-}
-
+// Returns all log records for a given instance_id from SQLite
 function formatPacificTimestamp(input) {
   if (!input) return 'unknown';
   let date;
@@ -298,66 +295,16 @@ function formatPacificTimestamp(input) {
 function serializeEntries(entries) {
   if (!Array.isArray(entries)) return [];
   return entries.map((entry) => {
-    const ts = formatPacificTimestamp(entry.ts || entry.raw_ts || entry.raw);
+    const ts = formatPacificTimestamp(entry.event_time || entry.ts || entry.raw_ts || entry.raw);
     const message = entry.message || '';
     return [ts, message];
   });
 }
 
 async function collectLogEntries(instanceId, filterFn) {
-  const files = await fsp.readdir(LOG_DIR);
-  const guessFiles = guessLogFilesForInstance(instanceId);
-  let logFiles = files.filter(f => f.startsWith('amp-') && f.endsWith('.log'));
-  if (guessFiles && guessFiles.length) {
-    const narrowed = logFiles.filter(f => guessFiles.includes(f));
-    if (narrowed.length) {
-      logFiles = narrowed;
-    }
-  }
-  const entries = [];
-  const pattern = `[${instanceId}]`;
-
-  for (const file of logFiles) {
-    const fullPath = path.join(LOG_DIR, file);
-    let text;
-    try {
-      text = await fsp.readFile(fullPath, 'utf8');
-    } catch (e) {
-      continue;
-    }
-    const lines = text.split(/\r?\n/);
-    for (const rawLine of lines) {
-      if (!rawLine || rawLine.indexOf(pattern) === -1) continue;
-      const tsPart = rawLine.split(': [')[0];
-      const msgPart = rawLine.substring(rawLine.indexOf(pattern) + pattern.length).trim();
-      const usernameMatch = msgPart.match(/\(([^)]+)\)\s*$/);
-      const username = usernameMatch ? usernameMatch[1] : undefined;
-      const message = usernameMatch ? msgPart.replace(usernameMatch[0], '').trim() : msgPart;
-      let ts = null;
-      try {
-        const parsed = Date.parse(tsPart);
-        ts = isNaN(parsed) ? null : new Date(parsed).toISOString();
-      } catch (_) { ts = null; }
-      const entry = {
-        ts,
-        message,
-        username,
-        source: file,
-        raw: rawLine
-      };
-      if (filterFn && !filterFn(entry)) continue;
-      entries.push(entry);
-    }
-  }
-
-  entries.sort((a, b) => {
-    if (a.ts && b.ts) return a.ts.localeCompare(b.ts);
-    if (a.ts) return -1;
-    if (b.ts) return 1;
-    return 0;
-  });
-
-  return entries;
+  const entries = await eventLogStore.listLogEntries(instanceId);
+  if (!filterFn) return entries;
+  return entries.filter(filterFn);
 }
 
 app.get('/api/log/progress-all', async (req, res) => {
@@ -396,6 +343,94 @@ app.get('/api/log/hitl-progress', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Agent Log REST service listening on http://localhost:${PORT}`);
+app.post('/api/rlhf/events/append', async (req, res) => {
+  if (requireLogAgentAuth(req, res)) return;
+  const event = req.body || {};
+  const required = ['event_id', 'org_id', 'agent_name', 'decision_point_id', 'event_type', 'created_at'];
+  for (const key of required) {
+    if (!event[key]) {
+      return res.status(400).json({ error: 'missing_required_field', field: key });
+    }
+  }
+  const orgId = String(event.org_id || '').trim();
+  const agentName = String(event.agent_name || '').trim();
+  if (!orgId) {
+    return res.status(400).json({ error: 'missing_required_field', field: 'org_id' });
+  }
+  if (!agentName) {
+    return res.status(400).json({ error: 'missing_required_field', field: 'agent_name' });
+  }
+  if (!['approval_request', 'approval_outcome'].includes(event.event_type)) {
+    return res.status(400).json({ error: 'invalid_event_type' });
+  }
+  try {
+    const result = await eventLogStore.insertApprovalEvent(event);
+    return res.json({ ok: true, inserted: result.inserted });
+  } catch (e) {
+    console.error('[ERROR] Failed to append RLHF event:', e.message || e);
+    return res.status(500).json({ error: 'event_append_failed' });
+  }
 });
+
+app.get('/api/rlhf/events/request', async (req, res) => {
+  if (requireLogAgentAuth(req, res)) return;
+  const orgId = String(req.query.org_id || '').trim();
+  const agentName = String(req.query.agent_name || '').trim();
+  const decisionPointId = String(req.query.decision_point_id || '').trim();
+  if (!orgId || !agentName || !decisionPointId) {
+    return res.status(400).json({ error: 'missing_required_field' });
+  }
+  try {
+    const payload = await eventLogStore.getApprovalRequestByDecisionPoint(orgId, agentName, decisionPointId);
+    if (!payload) {
+      return res.status(404).json({ error: 'not_found' });
+    }
+    return res.json({ ok: true, event: payload });
+  } catch (e) {
+    console.error('[ERROR] Failed to fetch approval_request:', e.message || e);
+    return res.status(500).json({ error: 'event_fetch_failed' });
+  }
+});
+
+app.get('/api/rlhf/events/query', async (req, res) => {
+  if (requireLogAgentAuth(req, res)) return;
+  const orgId = String(req.query.org_id || '').trim();
+  const agentName = String(req.query.agent_name || '').trim();
+  const eventType = String(req.query.event_type || '').trim();
+  const start = String(req.query.start || '').trim();
+  const end = String(req.query.end || '').trim();
+  if (!orgId || !agentName || !start || !end) {
+    return res.status(400).json({ error: 'missing_required_field' });
+  }
+  if (eventType && !['approval_request', 'approval_outcome'].includes(eventType)) {
+    return res.status(400).json({ error: 'invalid_event_type' });
+  }
+  try {
+    const events = await eventLogStore.queryApprovalEvents({
+      orgId,
+      agentName,
+      eventType: eventType || null,
+      start,
+      end
+    });
+    return res.json({ ok: true, events });
+  } catch (e) {
+    console.error('[ERROR] Failed to query approval events:', e.message || e);
+    return res.status(500).json({ error: 'event_query_failed' });
+  }
+});
+
+async function startServer() {
+  try {
+    await eventLogStore.init();
+  } catch (err) {
+    console.error('[ERROR] Failed to initialize SQLite store:', err);
+    process.exit(1);
+  }
+
+  app.listen(PORT, () => {
+    console.log(`Agent Log REST service listening on http://localhost:${PORT}`);
+  });
+}
+
+startServer();

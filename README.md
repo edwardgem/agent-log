@@ -10,6 +10,7 @@ A minimal REST API for centralized logging, designed for use by multiple agent o
 - Health check at GET /health
 - Easy to deploy and integrate
 - Supports hot reload for development
+- Optional JSONL debug output (opt-in only; not canonical storage)
 
 ## Usage
 
@@ -27,6 +28,8 @@ Optional: configure request body size limit (default `64kb`)
 ```
 BODY_LIMIT=128kb PORT=4000 npm start
 ```
+
+Set `AMP_ENV` or `NODE_ENV` in `.env` to control production guardrails.
 
 ### Hot reload (auto-restart on code changes)
 ```
@@ -50,6 +53,10 @@ curl -X POST http://localhost:4000/api/log \
 ```
 curl http://localhost:4000/health
 ```
+
+## Production guardrail
+
+In production (`AMP_ENV=production` or `NODE_ENV=production`), `LOG_AGENT_SECRET` must be set or the service exits at startup. Internal RLHF endpoints require `X-AMP-Internal-Key`.
 
 ## Log Format
 Each log entry is a single line:
