@@ -86,5 +86,22 @@ File naming uses a monthly log per config: `amp-mmm-yyyy.log`, e.g. `amp-sep-200
 - Use a process manager (pm2, systemd, etc.) for reliability.
 - Secure the endpoint if used in production.
 
+## RLHF performance tuning (SQLite)
+For heavy RLHF event traffic (many approval_request / approval_outcome writes plus queries),
+enable WAL + busy timeout and add query-friendly indexes. The defaults below are already
+applied in `store/sqlite_event_log_store.js`:
+
+```
+PRAGMA journal_mode = WAL;
+PRAGMA synchronous = NORMAL;
+PRAGMA busy_timeout = 5000;
+CREATE INDEX IF NOT EXISTS idx_approval_events_created
+  ON approval_events(org_id, agent_name, created_at);
+CREATE INDEX IF NOT EXISTS idx_approval_events_decision
+  ON approval_events(org_id, agent_name, decision_point_id);
+CREATE INDEX IF NOT EXISTS idx_approval_events_type_created
+  ON approval_events(org_id, agent_name, event_type, created_at);
+```
+
 ## License
 MIT

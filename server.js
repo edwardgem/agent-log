@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const lockfile = require('proper-lockfile');
 const http = require('http');
+const { createHash } = require('crypto');
 const { SqliteEventLogStore } = require('./store/sqlite_event_log_store');
 
 // Lightweight .env loader (avoids extra dependency). Load local .env then
@@ -171,6 +172,16 @@ function requireLogAgentAuth(req, res) {
   }
   const provided = req.headers['x-amp-internal-key'];
   if (!provided || provided !== LOG_AGENT_SECRET) {
+    if (process.env.LOG_AGENT_DEBUG_AUTH === '1') {
+      const expectedHash = LOG_AGENT_SECRET ? createHash('sha256').update(String(LOG_AGENT_SECRET)).digest('hex') : 'missing';
+      const providedHash = provided ? createHash('sha256').update(String(provided)).digest('hex') : 'missing';
+      console.warn('[LOG_AGENT][AUTH_DEBUG] invalid_log_agent_key', {
+        expected_len: LOG_AGENT_SECRET ? String(LOG_AGENT_SECRET).length : 0,
+        provided_len: provided ? String(provided).length : 0,
+        expected_hash: expectedHash,
+        provided_hash: providedHash
+      });
+    }
     res.status(401).json({ error: 'invalid_log_agent_key' });
     return true;
   }
@@ -399,21 +410,43 @@ app.get('/api/rlhf/events/query', async (req, res) => {
   const eventType = String(req.query.event_type || '').trim();
   const start = String(req.query.start || '').trim();
   const end = String(req.query.end || '').trim();
-  if (!orgId || !agentName || !start || !end) {
+  const simRunId = String(req.query.sim_run_id || '').trim();
+  if (!orgId || !agentName) {
+    return res.status(400).json({ error: 'missing_required_field' });
+  }
+  if (!simRunId && (!start || !end)) {
     return res.status(400).json({ error: 'missing_required_field' });
   }
   if (eventType && !['approval_request', 'approval_outcome'].includes(eventType)) {
     return res.status(400).json({ error: 'invalid_event_type' });
   }
   try {
+    const startFilter = simRunId ? null : start;
+    const endFilter = simRunId ? null : end;
     const events = await eventLogStore.queryApprovalEvents({
       orgId,
       agentName,
       eventType: eventType || null,
-      start,
-      end
+      start: startFilter,
+      end: endFilter
     });
-    return res.json({ ok: true, events });
+    let filtered = events;
+    if (simRunId) {
+      filtered = events.filter((row) => {
+        const payload = row.payload_json;
+        if (!payload) return false;
+        if (typeof payload === 'string') {
+          try {
+            const parsed = JSON.parse(payload);
+            return parsed && parsed.sim_run_id === simRunId;
+          } catch (_) {
+            return false;
+          }
+        }
+        return payload.sim_run_id === simRunId;
+      });
+    }
+    return res.json({ ok: true, events: filtered });
   } catch (e) {
     console.error('[ERROR] Failed to query approval events:', e.message || e);
     return res.status(500).json({ error: 'event_query_failed' });

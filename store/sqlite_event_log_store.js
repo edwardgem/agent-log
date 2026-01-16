@@ -30,6 +30,10 @@ class SqliteEventLogStore extends EventLogStore {
     if (this.db) return;
     this.db = new sqlite3.Database(this.dbPath);
 
+    await run(this.db, `PRAGMA journal_mode = WAL`);
+    await run(this.db, `PRAGMA synchronous = NORMAL`);
+    await run(this.db, `PRAGMA busy_timeout = 5000`);
+
     await run(this.db, `
       CREATE TABLE IF NOT EXISTS agent_logs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -73,6 +77,11 @@ class SqliteEventLogStore extends EventLogStore {
     await run(this.db, `
       CREATE INDEX IF NOT EXISTS idx_approval_events_decision
       ON approval_events(org_id, agent_name, decision_point_id)
+    `);
+
+    await run(this.db, `
+      CREATE INDEX IF NOT EXISTS idx_approval_events_type_created
+      ON approval_events(org_id, agent_name, event_type, created_at)
     `);
   }
 
@@ -189,12 +198,20 @@ class SqliteEventLogStore extends EventLogStore {
   async queryApprovalEvents({ orgId, agentName, eventType, start, end }) {
     if (!this.db) throw new Error('Database not initialized');
 
-    const params = [orgId, agentName, start, end];
+    const params = [orgId, agentName];
     let sql = `
       SELECT event_id, org_id, agent_name, decision_point_id, event_type, created_at, payload_json
       FROM approval_events
-      WHERE org_id = ? AND agent_name = ? AND created_at >= ? AND created_at <= ?
+      WHERE org_id = ? AND agent_name = ?
     `;
+    if (start) {
+      sql += ` AND created_at >= ?`;
+      params.push(start);
+    }
+    if (end) {
+      sql += ` AND created_at <= ?`;
+      params.push(end);
+    }
     if (eventType) {
       sql += ` AND event_type = ?`;
       params.push(eventType);
