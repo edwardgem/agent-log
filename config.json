@@ -1,3 +1,4 @@
 {
-  "log_dir": "/Users/edwardc/Projects/amp-backend/logs"
+  "log_dir": "/Users/edwardc/Projects/data",
+  "db_path": "/Users/edwardc/Projects/data/rlhf-stage.sqlite"
 }

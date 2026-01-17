@@ -70,7 +70,11 @@ try {
 } catch (e) {
   // Use default if config.json missing or invalid
 }
-const LOG_DIR = path.isAbsolute(config.log_dir) ? config.log_dir : path.join(__dirname, config.log_dir);
+const logDirFromEnv = process.env.LOG_DIR;
+const logDirConfig = logDirFromEnv && String(logDirFromEnv).trim().length > 0
+  ? logDirFromEnv
+  : config.log_dir;
+const LOG_DIR = path.isAbsolute(logDirConfig) ? logDirConfig : path.join(__dirname, logDirConfig);
 const LOG_JSONL_DEBUG = process.env.LOG_JSONL_DEBUG === '1' || config.log_jsonl_debug === true;
 const DB_PATH = process.env.LOG_DB_PATH || config.db_path || path.join(LOG_DIR, 'agent-log.sqlite');
 const LOG_AGENT_SECRET = process.env.LOG_AGENT_SECRET || config.log_agent_secret || '';
@@ -190,6 +194,8 @@ function requireLogAgentAuth(req, res) {
 
 // Ensure log directory exists (sync is fine during startup)
 fs.mkdirSync(LOG_DIR, { recursive: true });
+console.log(`[LOG_AGENT] log_dir=${LOG_DIR}`);
+console.log(`[LOG_AGENT] db_path=${DB_PATH}`);
 
 app.post('/api/log', async (req, res) => {
   console.log('[DEBUG] /api/log received request');
