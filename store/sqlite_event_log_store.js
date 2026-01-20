@@ -60,6 +60,7 @@ class SqliteEventLogStore extends EventLogStore {
         decision_point_id TEXT NOT NULL,
         event_type TEXT NOT NULL,
         created_at TEXT NOT NULL,
+        sim_run_id TEXT,
         payload_json TEXT NOT NULL
       )
     `);
@@ -82,6 +83,18 @@ class SqliteEventLogStore extends EventLogStore {
     await run(this.db, `
       CREATE INDEX IF NOT EXISTS idx_approval_events_type_created
       ON approval_events(org_id, agent_name, event_type, created_at)
+    `);
+
+    // Migration: Add sim_run_id column if it doesn't exist
+    try {
+      await run(this.db, `ALTER TABLE approval_events ADD COLUMN sim_run_id TEXT`);
+    } catch (err) {
+      // Column already exists, ignore error
+    }
+
+    await run(this.db, `
+      CREATE INDEX IF NOT EXISTS idx_approval_events_sim_run
+      ON approval_events(org_id, agent_name, sim_run_id, event_type, created_at)
     `);
   }
 
@@ -137,17 +150,33 @@ class SqliteEventLogStore extends EventLogStore {
     const payloadSource = event.payload_json ?? event.payload ?? event;
     const payloadJson = typeof payloadSource === 'string' ? payloadSource : JSON.stringify(payloadSource);
 
+    // Extract sim_run_id from payload
+    let simRunId = null;
+    try {
+      const payload = typeof payloadSource === 'string' ? JSON.parse(payloadSource) : payloadSource;
+      simRunId = payload.sim_run_id || null;
+    } catch (_) {
+      // Ignore parse errors
+    }
+
     const result = await run(
       this.db,
       `
         INSERT OR IGNORE INTO approval_events (
-          event_id, org_id, agent_name, decision_point_id, event_type, created_at, payload_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+          event_id, org_id, agent_name, decision_point_id, event_type, created_at, sim_run_id, payload_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `,
       [
         event.event_id,
         event.org_id,
         event.agent_name,
+        event.decision_point_id,
+        event.event_type,
+        event.created_at,
+        simRunId,
+        payloadJson
+      ]
+    );
         event.decision_point_id,
         event.event_type,
         event.created_at,
@@ -195,7 +224,7 @@ class SqliteEventLogStore extends EventLogStore {
     }
   }
 
-  async queryApprovalEvents({ orgId, agentName, eventType, start, end }) {
+  async queryApprovalEvents({ orgId, agentName, eventType, start, end, simRunId }) {
     if (!this.db) throw new Error('Database not initialized');
 
     const params = [orgId, agentName];
@@ -204,6 +233,10 @@ class SqliteEventLogStore extends EventLogStore {
       FROM approval_events
       WHERE org_id = ? AND agent_name = ?
     `;
+    if (simRunId) {
+      sql += ` AND sim_run_id = ?`;
+      params.push(simRunId);
+    }
     if (start) {
       sql += ` AND created_at >= ?`;
       params.push(start);

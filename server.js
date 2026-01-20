@@ -429,29 +429,14 @@ app.get('/api/rlhf/events/query', async (req, res) => {
   try {
     const startFilter = simRunId ? null : start;
     const endFilter = simRunId ? null : end;
-    const events = await eventLogStore.queryApprovalEvents({
+    const filtered = await eventLogStore.queryApprovalEvents({
       orgId,
       agentName,
       eventType: eventType || null,
       start: startFilter,
-      end: endFilter
+      end: endFilter,
+      simRunId: simRunId || null
     });
-    let filtered = events;
-    if (simRunId) {
-      filtered = events.filter((row) => {
-        const payload = row.payload_json;
-        if (!payload) return false;
-        if (typeof payload === 'string') {
-          try {
-            const parsed = JSON.parse(payload);
-            return parsed && parsed.sim_run_id === simRunId;
-          } catch (_) {
-            return false;
-          }
-        }
-        return payload.sim_run_id === simRunId;
-      });
-    }
     return res.json({ ok: true, events: filtered });
   } catch (e) {
     console.error('[ERROR] Failed to query approval events:', e.message || e);
