@@ -177,12 +177,6 @@ class SqliteEventLogStore extends EventLogStore {
         payloadJson
       ]
     );
-        event.decision_point_id,
-        event.event_type,
-        event.created_at,
-        payloadJson
-      ]
-    );
     return { inserted: Boolean(result && result.changes) };
   }
 
