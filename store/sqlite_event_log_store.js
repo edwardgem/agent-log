@@ -218,7 +218,7 @@ class SqliteEventLogStore extends EventLogStore {
     }
   }
 
-  async queryApprovalEvents({ orgId, agentName, eventType, start, end, simRunId }) {
+  async queryApprovalEvents({ orgId, agentName, eventType, start, end, simRunId, limit, offset }) {
     if (!this.db) throw new Error('Database not initialized');
 
     const params = [orgId, agentName];
@@ -244,6 +244,14 @@ class SqliteEventLogStore extends EventLogStore {
       params.push(eventType);
     }
     sql += ` ORDER BY created_at ASC, event_id ASC`;
+    if (typeof limit === 'number') {
+      sql += ` LIMIT ?`;
+      params.push(limit);
+      if (typeof offset === 'number' && offset > 0) {
+        sql += ` OFFSET ?`;
+        params.push(offset);
+      }
+    }
 
     return all(this.db, sql, params);
   }

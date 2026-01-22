@@ -417,6 +417,16 @@ app.get('/api/rlhf/events/query', async (req, res) => {
   const start = String(req.query.start || '').trim();
   const end = String(req.query.end || '').trim();
   const simRunId = String(req.query.sim_run_id || '').trim();
+  const DEFAULT_QUERY_LIMIT = 20000;
+  const MAX_QUERY_LIMIT = 50000;
+  const limitRaw = Number(req.query.limit);
+  const offsetRaw = Number(req.query.offset);
+  const limit = Number.isFinite(limitRaw)
+    ? Math.min(Math.max(Math.floor(limitRaw), 1), MAX_QUERY_LIMIT)
+    : DEFAULT_QUERY_LIMIT;
+  const offset = Number.isFinite(offsetRaw) && offsetRaw > 0
+    ? Math.floor(offsetRaw)
+    : 0;
   if (!orgId || !agentName) {
     return res.status(400).json({ error: 'missing_required_field' });
   }
@@ -435,9 +445,12 @@ app.get('/api/rlhf/events/query', async (req, res) => {
       eventType: eventType || null,
       start: startFilter,
       end: endFilter,
-      simRunId: simRunId || null
+      simRunId: simRunId || null,
+      limit,
+      offset
     });
-    return res.json({ ok: true, events: filtered });
+    const nextOffset = filtered.length >= limit ? offset + filtered.length : null;
+    return res.json({ ok: true, events: filtered, next_offset: nextOffset });
   } catch (e) {
     console.error('[ERROR] Failed to query approval events:', e.message || e);
     return res.status(500).json({ error: 'event_query_failed' });
