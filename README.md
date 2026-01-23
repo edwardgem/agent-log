@@ -10,6 +10,7 @@ A minimal REST API for centralized logging, designed for use by multiple agent o
 - Health check at GET /health
 - Easy to deploy and integrate
 - Supports hot reload for development
+- Optional JSONL debug output (opt-in only; not canonical storage)
 
 ## Usage
 
@@ -27,6 +28,8 @@ Optional: configure request body size limit (default `64kb`)
 ```
 BODY_LIMIT=128kb PORT=4000 npm start
 ```
+
+Set `AMP_ENV` or `NODE_ENV` in `.env` to control production guardrails.
 
 ### Hot reload (auto-restart on code changes)
 ```
@@ -50,6 +53,10 @@ curl -X POST http://localhost:4000/api/log \
 ```
 curl http://localhost:4000/health
 ```
+
+## Production guardrail
+
+In production (`AMP_ENV=production` or `NODE_ENV=production`), `LOG_AGENT_SECRET` must be set or the service exits at startup. Internal RLHF endpoints require `X-AMP-Internal-Key`.
 
 ## Log Format
 Each log entry is a single line:
@@ -78,6 +85,23 @@ File naming uses a monthly log per config: `amp-mmm-yyyy.log`, e.g. `amp-sep-200
 - Deploy this service separately from your agents.
 - Use a process manager (pm2, systemd, etc.) for reliability.
 - Secure the endpoint if used in production.
+
+## RLHF performance tuning (SQLite)
+For heavy RLHF event traffic (many approval_request / approval_outcome writes plus queries),
+enable WAL + busy timeout and add query-friendly indexes. The defaults below are already
+applied in `store/sqlite_event_log_store.js`:
+
+```
+PRAGMA journal_mode = WAL;
+PRAGMA synchronous = NORMAL;
+PRAGMA busy_timeout = 5000;
+CREATE INDEX IF NOT EXISTS idx_approval_events_created
+  ON approval_events(org_id, agent_name, created_at);
+CREATE INDEX IF NOT EXISTS idx_approval_events_decision
+  ON approval_events(org_id, agent_name, decision_point_id);
+CREATE INDEX IF NOT EXISTS idx_approval_events_type_created
+  ON approval_events(org_id, agent_name, event_type, created_at);
+```
 
 ## License
 MIT

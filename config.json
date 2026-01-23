@@ -1,3 +1,4 @@
 {
-  "log_dir": "/home/ubuntu/inquiryon_amp_backend/logs"
+  "log_dir": "/home/ubuntu/data",
+  "db_path": "/home/ubuntu/data/rlhf-stage.sqlite"
 }
