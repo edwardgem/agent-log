@@ -3,3 +3,4 @@ logs/
 .env
 .DS_Store
 ecosystem.config.js
+config.json
