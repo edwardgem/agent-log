@@ -7,6 +7,10 @@ class EventLogStore {
     throw new Error('Not implemented');
   }
 
+  async queryActivityByMonth(_opts) {
+    throw new Error('Not implemented');
+  }
+
   async listLogEntries(_instanceId) {
     throw new Error('Not implemented');
   }
