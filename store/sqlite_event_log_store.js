@@ -53,6 +53,11 @@ class SqliteEventLogStore extends EventLogStore {
     `);
 
     await run(this.db, `
+      CREATE INDEX IF NOT EXISTS idx_agent_logs_event_time
+      ON agent_logs(event_time)
+    `);
+
+    await run(this.db, `
       CREATE TABLE IF NOT EXISTS approval_events (
         event_id TEXT PRIMARY KEY,
         org_id TEXT NOT NULL,
@@ -128,6 +133,39 @@ class SqliteEventLogStore extends EventLogStore {
         created_at
       ]
     );
+  }
+
+  async queryActivityByMonth({ month, year, username }) {
+    if (!this.db) throw new Error('Database not initialized');
+
+    // Build date range for the requested month in Pacific time.
+    // month is a 3-letter abbreviation (e.g. "jan"), year is a 4-digit string/number.
+    const monthIndex = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec']
+      .indexOf(String(month).toLowerCase());
+    if (monthIndex === -1) return [];
+    const y = Number(year);
+    if (!Number.isFinite(y)) return [];
+
+    // ISO range: first ms of month through last ms of month (in UTC).
+    // We widen by 1 day on each side to account for Pacific offset.
+    const startDate = new Date(Date.UTC(y, monthIndex, 1));
+    startDate.setUTCDate(startDate.getUTCDate() - 1);
+    const endDate = new Date(Date.UTC(y, monthIndex + 1, 1));
+    endDate.setUTCDate(endDate.getUTCDate() + 1);
+
+    const params = [startDate.toISOString(), endDate.toISOString()];
+    let sql = `
+      SELECT instance_id, message, username, event_time
+      FROM agent_logs
+      WHERE event_time >= ? AND event_time < ?
+    `;
+    if (username) {
+      sql += ` AND username = ?`;
+      params.push(username);
+    }
+    sql += ` ORDER BY event_time DESC, id DESC`;
+
+    return all(this.db, sql, params);
   }
 
   async listLogEntries(instanceId) {

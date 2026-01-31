@@ -1,4 +1,4 @@
 {
-  "log_dir": "/Users/edwardc/Projects/data",
-  "db_path": "/Users/edwardc/Projects/data/rlhf-stage.sqlite"
+  "log_dir": "/home/ubuntu/data",
+  "db_path": "/home/ubuntu/data/rlhf-stage.sqlite"
 }

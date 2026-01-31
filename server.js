@@ -324,6 +324,58 @@ async function collectLogEntries(instanceId, filterFn) {
   return entries.filter(filterFn);
 }
 
+app.get('/api/log/activity', async (req, res) => {
+  const month = String(req.query.month || '').trim().toLowerCase();
+  const year = String(req.query.year || '').trim();
+  const username = String(req.query.username || '').trim() || undefined;
+
+  if (!month || !year) {
+    return res.status(400).json({ error: 'month and year are required' });
+  }
+
+  try {
+    const rows = await eventLogStore.queryActivityByMonth({ month, year, username });
+    const records = [];
+    for (const row of rows) {
+      const msg = String(row.message || '');
+      const upper = msg.toUpperCase();
+      // Filter out [PROGRESS] and [HITL-PROGRESS] entries
+      if (upper.startsWith('[PROGRESS]') || upper.startsWith('[HITL-PROGRESS]')) continue;
+
+      let status = 'activity';
+      let action = msg;
+
+      if (msg.includes('state - ')) {
+        const payload = msg.split('state - ')[1] || '';
+        const token = (payload.split(/\s/)[0] || '').toLowerCase();
+        if (token === 'aborted') {
+          status = 'abort';
+        } else if (token === 'done') {
+          status = 'finished';
+        } else {
+          status = token;
+        }
+        action = 'State Change';
+      } else {
+        // Strip leading bracket prefix like [HITL] from the action text
+        action = msg.replace(/^\[[^\]]*\]\s*/, '');
+      }
+
+      records.push({
+        datetime: formatPacificTimestamp(row.event_time),
+        agent_id: row.instance_id,
+        status,
+        action,
+        username: row.username || null,
+      });
+    }
+    return res.json(records);
+  } catch (e) {
+    console.error('[ERROR] /api/log/activity failed:', e.message || e);
+    return res.status(500).json({ error: 'activity_query_failed', detail: e && e.message ? e.message : String(e) });
+  }
+});
+
 app.get('/api/log/progress-all', async (req, res) => {
   const instanceId = String(req.query.instance_id || req.query.id || '').trim();
   if (!instanceId) {
