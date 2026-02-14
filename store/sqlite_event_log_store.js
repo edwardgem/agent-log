@@ -47,6 +47,13 @@ class SqliteEventLogStore extends EventLogStore {
       )
     `);
 
+    // Migration: add org_id column
+    try {
+      await run(this.db, `ALTER TABLE agent_logs ADD COLUMN org_id TEXT NOT NULL DEFAULT ''`);
+    } catch (err) {
+      // Column already exists, ignore error
+    }
+
     await run(this.db, `
       CREATE INDEX IF NOT EXISTS idx_agent_logs_instance_time
       ON agent_logs(instance_id, event_time)
@@ -55,6 +62,11 @@ class SqliteEventLogStore extends EventLogStore {
     await run(this.db, `
       CREATE INDEX IF NOT EXISTS idx_agent_logs_event_time
       ON agent_logs(event_time)
+    `);
+
+    await run(this.db, `
+      CREATE INDEX IF NOT EXISTS idx_agent_logs_org_instance_time
+      ON agent_logs(org_id, instance_id, event_time)
     `);
 
     await run(this.db, `
@@ -113,15 +125,16 @@ class SqliteEventLogStore extends EventLogStore {
       message,
       username,
       event_time,
-      created_at
+      created_at,
+      org_id
     } = entry;
 
     await run(
       this.db,
       `
         INSERT INTO agent_logs (
-          instance_id, service, level, message, username, event_time, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+          instance_id, service, level, message, username, event_time, created_at, org_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `,
       [
         instance_id,
@@ -130,12 +143,13 @@ class SqliteEventLogStore extends EventLogStore {
         message,
         username,
         event_time,
-        created_at
+        created_at,
+        org_id || ''
       ]
     );
   }
 
-  async queryActivityByMonth({ month, year, username }) {
+  async queryActivityByMonth({ month, year, username, org_id }) {
     if (!this.db) throw new Error('Database not initialized');
 
     // Build date range for the requested month in Pacific time.
@@ -159,6 +173,10 @@ class SqliteEventLogStore extends EventLogStore {
       FROM agent_logs
       WHERE event_time >= ? AND event_time < ?
     `;
+    if (org_id) {
+      sql += ` AND org_id = ?`;
+      params.push(org_id);
+    }
     if (username) {
       sql += ` AND username = ?`;
       params.push(username);

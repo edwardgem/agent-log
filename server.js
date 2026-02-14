@@ -201,7 +201,7 @@ app.post('/api/log', async (req, res) => {
   console.log('[DEBUG] /api/log received request');
   console.log('[DEBUG] Request body:', JSON.stringify(req.body, null, 2));
 
-  const { service, level = 'info', message, timestamp, instance_id, username } = req.body;
+  const { service, level = 'info', message, timestamp, instance_id, username, org_id } = req.body;
   // Sanitize helper first so we can validate instance_id after trimming
   const clean = (v) => String(v ?? '').replace(/[\r\n]+/g, ' ').trim();
 
@@ -230,7 +230,8 @@ app.post('/api/log', async (req, res) => {
       message: cleanMessage,
       username: userName,
       event_time: eventTime,
-      created_at: new Date().toISOString()
+      created_at: new Date().toISOString(),
+      org_id: org_id || ''
     });
   } catch (err) {
     console.error('[ERROR] Failed to write log entry to SQLite:', err);
@@ -328,13 +329,14 @@ app.get('/api/log/activity', async (req, res) => {
   const month = String(req.query.month || '').trim().toLowerCase();
   const year = String(req.query.year || '').trim();
   const username = String(req.query.username || '').trim() || undefined;
+  const org_id = String(req.query.org_id || '').trim() || undefined;
 
   if (!month || !year) {
     return res.status(400).json({ error: 'month and year are required' });
   }
 
   try {
-    const rows = await eventLogStore.queryActivityByMonth({ month, year, username });
+    const rows = await eventLogStore.queryActivityByMonth({ month, year, username, org_id });
     const records = [];
     for (const row of rows) {
       const msg = String(row.message || '');
