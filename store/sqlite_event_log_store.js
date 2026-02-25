@@ -174,7 +174,7 @@ class SqliteEventLogStore extends EventLogStore {
       WHERE event_time >= ? AND event_time < ?
     `;
     if (org_id) {
-      sql += ` AND org_id = ?`;
+      sql += ` AND org_id IN (?, '')`;
       params.push(org_id);
     }
     if (username) {
