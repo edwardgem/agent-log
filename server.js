@@ -6,6 +6,7 @@ const lockfile = require('proper-lockfile');
 const http = require('http');
 const { createHash } = require('crypto');
 const { SqliteEventLogStore } = require('./store/sqlite_event_log_store');
+const { MysqlEventLogStore } = require('./store/mysql_event_log_store');
 
 // Lightweight .env loader (avoids extra dependency). Load local .env then
 // fall back to backend/.env so both services can share the trigger secret.
@@ -84,7 +85,21 @@ const isProduction = ['production'].includes(String(NODE_ENV).toLowerCase())
   || ['production'].includes(String(AMP_ENV).toLowerCase());
 const REQUIRE_AUTH = process.env.LOG_AGENT_REQUIRE_AUTH === '1' || isProduction;
 const BODY_LIMIT = process.env.BODY_LIMIT || config.body_limit || '64kb';
-const eventLogStore = new SqliteEventLogStore(DB_PATH);
+
+// DB_BACKEND switch: set LOG_DB_BACKEND=sqlite to roll back to SQLite instantly.
+const DB_BACKEND = process.env.LOG_DB_BACKEND || 'mysql';
+let eventLogStore;
+if (DB_BACKEND === 'sqlite') {
+  eventLogStore = new SqliteEventLogStore(DB_PATH);
+} else {
+  eventLogStore = new MysqlEventLogStore({
+    host: process.env.MYSQL_HOST || '127.0.0.1',
+    port: parseInt(process.env.MYSQL_PORT || '3306', 10),
+    database: process.env.MYSQL_DATABASE || 'amp',
+    user: process.env.MYSQL_USER || 'amp_user',
+    password: process.env.MYSQL_PASSWORD || '',
+  });
+}
 
 if (isProduction && !LOG_AGENT_SECRET) {
   console.error('[FATAL] log-agent requires LOG_AGENT_SECRET in production.');
@@ -515,7 +530,7 @@ async function startServer() {
   try {
     await eventLogStore.init();
   } catch (err) {
-    console.error('[ERROR] Failed to initialize SQLite store:', err);
+    console.error('[ERROR] Failed to initialize event log store:', err);
     process.exit(1);
   }
 
